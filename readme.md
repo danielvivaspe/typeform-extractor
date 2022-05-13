@@ -37,7 +37,7 @@ Optional parameters:
 
 #### 3. Press play!
 <br/><br/>
-More detailed example are located in test.ipynb notebook
+A more detailed example is located in test.ipynb notebook
 
 ## Authors:
 - Daniel Vivas
