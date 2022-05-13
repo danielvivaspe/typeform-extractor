@@ -40,5 +40,5 @@ Optional parameters:
 A more detailed example is located in test.ipynb notebook
 
 ## Authors:
-- Daniel Vivas
-- Julia Martínez
+- Daniel Vivas - hello@danielvivas.com
+- Julia Martínez - jmtcorreo@gmx.es
