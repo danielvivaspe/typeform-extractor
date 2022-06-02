@@ -82,6 +82,39 @@ class TypeformExtractor:
         data = requests.get(url, headers=headers, params=params)
         return data.json()
 
+    # Function to support get_field_names function
+    def __recursive_search(self, data, dicc):
+        if 'fields' in data.keys():
+            for item in data['fields']:
+                if 'fields' in item['properties'].keys():
+                    self.__recursive_search(item['properties'], dicc)
+                else:
+                    key = self.field_prefix + item["id"]
+                    dicc[key] = item["title"]
+
+        return dicc
+
+    def get_field_names(self, form_id: str) -> dict:
+        """
+        Fetches field names from Typeform API
+        :param form_id: Form to get data from
+        :return: Dict with keys as field ids and values as field names
+        """
+
+        url = f"https://api.typeform.com/forms/{form_id}"
+
+        headers = {
+            'Authorization': self.credentials['typeform_token']
+        }
+
+        data = requests.get(url, headers=headers)
+
+        data = data.json()
+
+        dicc = self.__recursive_search(data, {})
+
+        return dicc
+
     def generate_row(self, data: dict, fixed_fields: dict, sentiment: list):
         """
         Processes raw data to generate rows, gets the analysis sentiment and appends it to the dataframe
@@ -91,6 +124,9 @@ class TypeformExtractor:
         :param sentiment: If not empty, it will analyze sentiments based on fields included on this list
         """
         for item in data['items']:
+
+            if self.debug:
+                print(f"Analyzing submission with ID {item['token']}")
 
             row = {}
 
@@ -111,35 +147,42 @@ class TypeformExtractor:
                 field_id = answer['field']['id']
                 field_type = answer['field']['type']
 
-                if field_type == "short_text" or field_type == "long_text":
-                    row[self.field_prefix + field_id] = answer['text']
-                    if field_type == "long_text" and (
-                            (self.field_prefix + field_id in sentiment) or (field_id in sentiment)):
-                        texts.append(answer['text'])
-                elif field_type == "multiple_choice":
-                    if 'choice' in answer.keys():
-                        if 'label' in answer['choice'].keys():
-                            row[self.field_prefix + field_id] = answer['choice']['label']
-                    elif 'choices' in answer.keys():
-                        row[self.field_prefix + field_id] = answer['choices']['labels']
+                if self.debug:
+                    print(f"\tAnalyzing answer field with ID {field_id} ({field_type})")
+
+                try:
+                    if field_type == "short_text" or field_type == "long_text":
+                        row[self.field_prefix + field_id] = answer['text']
+                        if field_type == "long_text" and (
+                                (self.field_prefix + field_id in sentiment) or (field_id in sentiment)):
+                            texts.append(answer['text'])
+                    elif field_type == "multiple_choice":
+                        if 'choice' in answer.keys():
+                            if 'label' in answer['choice'].keys():
+                                row[self.field_prefix + field_id] = answer['choice']['label']
+                        elif 'choices' in answer.keys():
+                            row[self.field_prefix + field_id] = answer['choices']['labels']
+                        else:
+                            row[self.field_prefix + field_id] = None
+                    elif field_type == "opinion_scale":
+                        row[self.field_prefix + field_id] = answer['number']
+                    elif field_type == "yes_no":
+                        row[self.field_prefix + field_id] = answer['boolean']
+                    elif field_type == "picture_choice":
+                        row[self.field_prefix + field_id] = answer['choice']['label']
+                    elif field_type == "email":
+                        row[self.field_prefix + field_id] = answer['email']
+                    elif field_type == "number":
+                        row[self.field_prefix + field_id] = answer['number']
+                    elif field_type == "phone_number":
+                        row[self.field_prefix + field_id] = answer['phone_number']
+                    elif field_type == "date":
+                        row[self.field_prefix + field_id] = answer['date']
                     else:
-                        raise Exception('Field type not included in multiple_choice')
-                elif field_type == "opinion_scale":
-                    row[self.field_prefix + field_id] = answer['number']
-                elif field_type == "email":
-                    row[self.field_prefix + field_id] = answer['email']
-                elif field_type == "yes_no":
-                    row[self.field_prefix + field_id] = answer['boolean']
-                elif field_type == "number":
-                    row[self.field_prefix + field_id] = answer['number']
-                elif field_type == "phone_number":
-                    row[self.field_prefix + field_id] = answer['phone_number']
-                elif field_type == "date":
-                    row[self.field_prefix + field_id] = answer['date']
-                elif field_type == "picture_choice":
-                    row[self.field_prefix + field_id] = answer['choice']['label']
-                else:
-                    raise Exception('Field type not recognized')
+                        row[self.field_prefix + field_id] = None
+
+                except:
+                    row[self.field_prefix + field_id] = None
 
             if len(texts) > 0 and sentiment:
                 sentiment_label = self.analyze_sentiment(*texts)
@@ -151,7 +194,8 @@ class TypeformExtractor:
 
                 texts = []
 
-            self.df = self.df.append(row, ignore_index=True)
+            #self.df = self.df.append(row, ignore_index=True)
+            self.df = pd.concat([self.df, pd.DataFrame.from_records([row])])
 
             # To get the last token for the next requests
             self.last_token = item['token']
@@ -203,7 +247,7 @@ class TypeformExtractor:
                                inplace=True)
 
     def extract(self, form_id: str, field_names: dict = None, sentiment: list = [],
-                fixed_fields: dict = {}) -> pd.DataFrame:
+                fixed_fields: dict = {}, auto_translate: bool = True) -> pd.DataFrame:
         """
         Main function. Fetches the data, processes it and returns structured dataframe
 
@@ -211,6 +255,7 @@ class TypeformExtractor:
         :param field_names: Dict with all column names to change
         :param sentiment: Columns to analyze with sentiment analysis. If empty, no analysis will be made
         :param fixed_fields: Constant columns to add to the Dataframe, Its value will be the same in all rows
+        :param auto_translate: If True, it will fetch column names from the API. They may not be the names you want.
         :return: Structured dataframe with all translated fields
         """
 
@@ -237,7 +282,13 @@ class TypeformExtractor:
             self.generate_row(data, fixed_fields, sentiment)
             data = self.retrieve_data(form_id)
 
+        # Field names - First, translate manually inputted names
         if field_names is not None:
             self.translate_fields(field_names)
+
+        # Field names - Then, auto translate fields
+        if auto_translate:
+            names = self.get_field_names(form_id)
+            self.translate_fields(names)
 
         return self.df

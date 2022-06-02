@@ -33,6 +33,7 @@ Optional parameters:
 - **field_names:** Dict with all column names to change
 - **sentiment:** Columns to analyze with sentiment analysis. If empty, no analysis will be made
 - **fixed_fields:** Constant columns to add to the Dataframe, Its value will be the same in all rows
+- **auto_translate:** If True, it will fetch column names from Typeform API. Use this with caution, they may not be the names you want or may be too long. It will only fetch columns that do not appear in **field_names**.
 <br/><br/>
 
 #### 3. Press play!
