@@ -194,7 +194,7 @@ class TypeformExtractor:
 
                 texts = []
 
-            #self.df = self.df.append(row, ignore_index=True)
+            # self.df = self.df.append(row, ignore_index=True)
             self.df = pd.concat([self.df, pd.DataFrame.from_records([row])])
 
             # To get the last token for the next requests
@@ -265,8 +265,9 @@ class TypeformExtractor:
                                          'aws_private_key'] == '')):
             raise Exception('AWS credentials are malformed or missing')
 
-        # Reset dataframe from previous results
+        # Reset variables from previous results
         self.df = None
+        self.last_token = ''
 
         form_id = str(form_id)
 
