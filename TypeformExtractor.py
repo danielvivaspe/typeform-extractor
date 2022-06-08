@@ -293,3 +293,36 @@ class TypeformExtractor:
             self.translate_fields(names)
 
         return self.df
+
+    def test_all_forms(self, directory: str = 'dump'):
+        forms = {}
+
+        url = "https://api.typeform.com/forms"
+        headers = {
+            'Authorization': self.credentials['typeform_token']
+        }
+        params = {
+            'page': 1
+        }
+
+        data = requests.get(url, headers=headers, params=params).json()
+
+        total_pages = data['page_count']
+
+        for item in data['items']:
+            forms[item['id']] = item['title']
+
+        while params['page'] <= total_pages:
+
+            params['page'] += 1
+
+            data = requests.get(url, headers=headers, params=params).json()
+
+            for item in data['items']:
+                print(f"------------------ ANALIZING {item['title']} ------------------")
+
+                df = self.extract(form_id=item['id'])
+                name = item['title'].replace('|', '')
+                df.to_csv(f"{directory}\\{name}.csv")
+
+                print(f"------------------- FINISHED {name} -------------------")
