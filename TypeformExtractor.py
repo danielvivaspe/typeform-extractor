@@ -2,21 +2,24 @@ import boto3
 import requests
 import pandas as pd
 import boto3.exceptions
+import formulas
 
 
 class TypeformExtractor:
     """
-    Simple class to extract data from TypeForm Responses API and analyze text sentiments with Amazon Comprehend (AWS)
+    Simple class to extract data from TypeForm Responses API, analyze text sentiments with Amazon Comprehend (AWS)
+        and calculate metrics with the data
 
     AUTHORS:
-        Daniel Vivas
-        Julia Martinez Tapia
+        Daniel Vivas         - hello@danielvivas.com
+        Julia Martinez Tapia - gmtcorreo@gmx.es
     """
 
     credentials = None
     aws_client = None
     last_token = ''
     df = None
+    metrics = None
 
     field_prefix = None
     page_size = None
@@ -38,6 +41,7 @@ class TypeformExtractor:
         self.field_prefix = field_prefix
         self.page_size = page_size
         self.debug = debug
+        self.metrics = []
 
         self.aws_client = boto3.client(service_name='comprehend', region_name='us-east-2',
                                        aws_access_key_id=self.credentials['aws_public_key'],
@@ -151,7 +155,7 @@ class TypeformExtractor:
                     print(f"\tAnalyzing answer field with ID {field_id} ({field_type})")
 
                 try:
-                    if field_type == "short_text" or field_type == "long_text":
+                    if field_type in ["short_text", "long_text", "dropdown"]:
                         row[self.field_prefix + field_id] = answer['text']
                         if field_type == "long_text" and (
                                 (self.field_prefix + field_id in sentiment) or (field_id in sentiment)):
@@ -180,6 +184,8 @@ class TypeformExtractor:
                         row[self.field_prefix + field_id] = answer['date']
                     else:
                         row[self.field_prefix + field_id] = None
+                        if self.debug:
+                            print(f"Non recognized field type: {field_type}!")
 
                 except:
                     row[self.field_prefix + field_id] = None
@@ -246,10 +252,138 @@ class TypeformExtractor:
                 self.df.rename(columns={field: field_names[field.replace(self.field_prefix, '')]},
                                inplace=True)
 
+    def test_all_forms(self, directory: str):
+        """
+        Fetches a list with all form IDs from the account and dumps a CSV file with each form
+
+        :param directory: Path to store generated CSVs
+        """
+        forms = {}
+
+        url = "https://api.typeform.com/forms"
+        headers = {
+            'Authorization': self.credentials['typeform_token']
+        }
+        params = {
+            'page': 1
+        }
+
+        data = requests.get(url, headers=headers, params=params).json()
+
+        total_pages = data['page_count']
+
+        for item in data['items']:
+            forms[item['id']] = item['title']
+
+        while params['page'] <= total_pages:
+
+            params['page'] += 1
+
+            data = requests.get(url, headers=headers, params=params).json()
+
+            for item in data['items']:
+                print(f"------------------ ANALIZING {item['title']} ------------------")
+
+                df = self.extract(form_id=item['id'])
+                name = item['title'].replace('|', '')
+                df.to_csv(f"{directory}\\{name}.csv")
+
+                print(f"------------------- FINISHED {name} -------------------")
+
+    def __fix_column_name(self, column):
+        return column.replace(" ", "_").replace("\n", "").replace("/", "").replace("?", "") \
+            .replace("¿", "").replace(",", "").replace("\"", "").replace(";", "").replace("=", "") \
+            .replace("!", "").replace("¡", "").replace("%", "").replace(":", "").replace("(", "") \
+            .replace(")", "").replace("º", "").replace("ª", "").replace("\\", "").replace("'", "") \
+            .replace("-", "").replace("[", "").replace("]", "").replace("<", "").replace(">", "") \
+            .replace("*", "").replace("&", "").replace("+", "").replace("‘", "").replace("’", "")
+
+    def __fix_formula(self, formula: str):
+        """
+        Modifies formula according to calculation requirements
+
+        :param formula: Metric formula
+        """
+        # 1. Translate functions
+        translate = [
+            {"old": "CONTAR.SI", "new": "COUNTIF"},
+            {"old": "SI.ERROR", "new": "IFERROR"},
+            {"old": "SI", "new": "IF"},
+            {"old": "SUMA", "new": "SUM"},
+            {"old": "CONTAR", "new": "COUNT"},
+            {"old": "REDONDEAR.MENOS", "new": "ROUNDDOWN"}
+        ]
+
+        for item in translate:
+            formula = formula.replace(f"{item['old']}(", f"{item['new']}(")
+
+        # 2. Underscore blank spaces and remove trash in column names
+        for column in list(self.df.columns):
+            col_name = self.__fix_column_name(column)
+            column = column.replace("\n", "")
+            formula = formula.replace(column, col_name)
+
+        # 3. Remove new lines and tabs
+        formula = formula.replace("\n", "").replace("\t", "").replace(";", ",")
+
+        # 3. Add = at the beggining
+        if formula[0] != "=":
+            formula = "=" + formula
+
+        return formula
+
+    def add_metric(self, name: str, formula: str):
+        """
+        Creates a new metric
+
+        :param name: Metric name
+        :param formula: Formula to calculate metric
+        :return metric: Metric to add calculations to
+        """
+        self.metrics.append({
+            'name': name, 'formula': formula
+        })
+
+    def __generate_arguments(self, inputs: list, row: dict):
+        args = []
+        for input in inputs:
+            for column in row.keys():
+                col_name = self.__fix_column_name(column.upper())
+                if col_name == input:
+                    args.append(row[column])
+
+        return args
+
+    def __calculate_metric(self, metric: dict, row: dict):
+        """
+        Calculates a metric and returns its result
+
+        :param metric: Metric to calculate
+        :param row: Data to calculate metric
+        """
+
+        formula = self.__fix_formula(metric['formula'])
+
+        func = formulas.Parser().ast(formula)[1].compile()
+
+        params = self.__generate_arguments(list(func.inputs), row)
+
+        return func(*params)
+
+    def calculate_metrics(self):
+        """
+        Calculates all the metrics and concatenates a new column for each metric
+        """
+        for metric in self.metrics:
+            if self.debug:
+                print(f"Calculating metric {metric['name']}")
+
+            self.df[metric['name']] = self.df.apply(lambda x: self.__calculate_metric(metric, x), axis=1)
+
     def extract(self, form_id: str, field_names: dict = None, sentiment: list = [],
                 fixed_fields: dict = {}, auto_translate: bool = True) -> pd.DataFrame:
         """
-        Main function. Fetches the data, processes it and returns structured dataframe
+        Main function. Fetches the data, processes it and stores it inside the object
 
         :param form_id: Id of the form to get data from
         :param field_names: Dict with all column names to change
@@ -292,37 +426,8 @@ class TypeformExtractor:
             names = self.get_field_names(form_id)
             self.translate_fields(names)
 
+        # Calculate metric
+        self.calculate_metrics()
+
+    def dataframe(self):
         return self.df
-
-    def test_all_forms(self, directory: str = 'dump'):
-        forms = {}
-
-        url = "https://api.typeform.com/forms"
-        headers = {
-            'Authorization': self.credentials['typeform_token']
-        }
-        params = {
-            'page': 1
-        }
-
-        data = requests.get(url, headers=headers, params=params).json()
-
-        total_pages = data['page_count']
-
-        for item in data['items']:
-            forms[item['id']] = item['title']
-
-        while params['page'] <= total_pages:
-
-            params['page'] += 1
-
-            data = requests.get(url, headers=headers, params=params).json()
-
-            for item in data['items']:
-                print(f"------------------ ANALIZING {item['title']} ------------------")
-
-                df = self.extract(form_id=item['id'])
-                name = item['title'].replace('|', '')
-                df.to_csv(f"{directory}\\{name}.csv")
-
-                print(f"------------------- FINISHED {name} -------------------")
