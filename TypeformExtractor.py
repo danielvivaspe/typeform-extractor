@@ -47,14 +47,13 @@ class TypeformExtractor:
                                        aws_access_key_id=self.credentials['aws_public_key'],
                                        aws_secret_access_key=self.credentials['aws_private_key'])
 
-    def analyze_sentiment(self, *args: str) -> dict:
+    def detect_sentiment(self, text: str) -> dict:
         """
         Connects to Amazon Comprehend API to analyze sentiment of given texts
 
-        :param args: Texts to analyze
+        :param text: Text to analyze
         :return: Percentages of sentiments and sentiment label
         """
-        text = ' '.join(args)
         sentiment = None
 
         try:
@@ -157,9 +156,6 @@ class TypeformExtractor:
                 try:
                     if field_type in ["short_text", "long_text", "dropdown"]:
                         row[self.field_prefix + field_id] = answer['text']
-                        if field_type == "long_text" and (
-                                (self.field_prefix + field_id in sentiment) or (field_id in sentiment)):
-                            texts.append(answer['text'])
                     elif field_type == "multiple_choice":
                         if 'choice' in answer.keys():
                             if 'label' in answer['choice'].keys():
@@ -190,17 +186,6 @@ class TypeformExtractor:
                 except:
                     row[self.field_prefix + field_id] = None
 
-            if len(texts) > 0 and sentiment:
-                sentiment_label = self.analyze_sentiment(*texts)
-
-                if sentiment_label is not None:
-                    row['Sentiment'] = sentiment_label["Sentiment"]
-                else:
-                    row['Sentiment'] = 'Not analyzed'
-
-                texts = []
-
-            # self.df = self.df.append(row, ignore_index=True)
             self.df = pd.concat([self.df, pd.DataFrame.from_records([row])])
 
             # To get the last token for the next requests
@@ -230,9 +215,6 @@ class TypeformExtractor:
                 fields.add(name)
 
         columns.extend(fields)
-
-        if len(sentiment) > 0:
-            columns.append('Sentiment')
 
         return columns
 
@@ -380,6 +362,13 @@ class TypeformExtractor:
 
             self.df[metric['name']] = self.df.apply(lambda x: self.__calculate_metric(metric, x), axis=1)
 
+    def analyze_sentiment(self, columns):
+        for column in columns:
+            if self.debug:
+                print(f"Analyzing sentiment for column {column}")
+
+            self.df[f"sentiment_{column}"] = self.df.apply(lambda x: self.detect_sentiment(x[column])['Sentiment'], axis=1)
+
     def extract(self, form_id: str, field_names: dict = None, sentiment: list = [],
                 fixed_fields: dict = {}, auto_translate: bool = True) -> pd.DataFrame:
         """
@@ -425,6 +414,10 @@ class TypeformExtractor:
         if auto_translate:
             names = self.get_field_names(form_id)
             self.translate_fields(names)
+
+        # Analyze sentiment
+        if sentiment is not None:
+            self.analyze_sentiment(sentiment)
 
         # Calculate metric
         self.calculate_metrics()
