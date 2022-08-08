@@ -278,7 +278,8 @@ class TypeformExtractor:
             .replace("!", "").replace("¡", "").replace("%", "").replace(":", "").replace("(", "") \
             .replace(")", "").replace("º", "").replace("ª", "").replace("\\", "").replace("'", "") \
             .replace("-", "").replace("[", "").replace("]", "").replace("<", "").replace(">", "") \
-            .replace("*", "").replace("&", "").replace("+", "").replace("‘", "").replace("’", "")
+            .replace("*", "").replace("&", "").replace("+", "").replace("‘", "").replace("’", "") \
+            .replace("{", "").replace("}", "")
 
     def __fix_formula(self, formula: str):
         """
