@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import boto3.exceptions
 import formulas
+import random
 
 
 class TypeformExtractor:
@@ -14,6 +15,8 @@ class TypeformExtractor:
         Daniel Vivas         - hello@danielvivas.com
         Julia Martinez Tapia - gmtcorreo@gmx.es
     """
+
+    SUPPORTED_FUNCS_ES = ["CONTAR.SI", "SI.ERROR", "SI", "SUMA", "CONTAR", "REDONDEAR.MENOS"]
 
     credentials = None
     aws_client = None
@@ -66,6 +69,13 @@ class TypeformExtractor:
 
         return sentiment
 
+    def __api_error_handling(self, data):
+        if data.status_code == 403:
+            raise Exception(f"""
+            403 Error: Please check your Typeform token and try again\n
+            {data.json()['code']} - {data.json()['description']}
+            """)
+
     def retrieve_data(self, form_id: str) -> dict:
         """
         Fetches form data from Typeform Responses API
@@ -73,6 +83,9 @@ class TypeformExtractor:
         :param form_id: Form ID to get data from
         :return: JSON with fetched raw data
         """
+
+        if self.debug:
+            print("Fetching data from Typeform API...")
 
         url = f"https://api.typeform.com/forms/{form_id}/responses"
         params = {
@@ -83,6 +96,8 @@ class TypeformExtractor:
             'Authorization': self.credentials['typeform_token']
         }
         data = requests.get(url, headers=headers, params=params)
+        self.__api_error_handling(data)
+
         return data.json()
 
     # Function to support get_field_names function
@@ -104,6 +119,9 @@ class TypeformExtractor:
         :return: Dict with keys as field ids and values as field names
         """
 
+        if self.debug:
+            print("Getting field names from Typeform API...")
+
         url = f"https://api.typeform.com/forms/{form_id}"
 
         headers = {
@@ -111,6 +129,7 @@ class TypeformExtractor:
         }
 
         data = requests.get(url, headers=headers)
+        self.__api_error_handling(data)
 
         data = data.json()
 
@@ -151,7 +170,7 @@ class TypeformExtractor:
                 field_type = answer['field']['type']
 
                 if self.debug:
-                    print(f"\tAnalyzing answer field with ID {field_id} ({field_type})")
+                    print(f"\tGenerating answer field with ID {field_id} ({field_type})")
 
                 try:
                     if field_type in ["short_text", "long_text", "dropdown"]:
@@ -337,6 +356,45 @@ class TypeformExtractor:
 
         return args
 
+    def test_formula(self, formula: str, csv_path: str, nrow: int = None):
+        """
+        Checks if a given formula is valid
+
+        :param formula: Formula to check.
+        :param nrow: Row to test with. If None, a random one will be used.
+        :param csv_path: Full csv path to load as dataframe.
+        """
+
+        # Temporary set df to be able to test formula
+        self.df = pd.read_csv(csv_path)
+
+        print('---------------- NEW FORMULA ----------------------')
+        fixed_formula = self.__fix_formula(formula)
+        print(fixed_formula, '\n')
+
+        func = formulas.Parser().ast(fixed_formula)[1].compile()
+
+        print('------------------- INPUTS -------------------------')
+        form_inputs = list(func.inputs)
+        print(form_inputs, '\n')
+
+        if nrow is None:
+            row = self.df.iloc[random.randint(0, self.df.shape[0])]
+        else:
+            row = self.df.iloc[nrow]
+
+        print('----------------- ARGUMENTS => RESULT -----------------------')
+        args = self.__generate_arguments(form_inputs, row)
+        print('ARGUMENTS:', args)
+        if len(args) > len(form_inputs):
+            print("!!! POSSIBLE COLUMN DUPLICATION !!!")
+        result = func(*args)
+        print('RESULT: ', result)
+        print('-------------------------------------------------------------')
+
+        # Assuming the dataframe was empty
+        self.df = None
+
     def __calculate_metric(self, metric: dict, row: dict):
         """
         Calculates a metric and returns its result
@@ -357,9 +415,9 @@ class TypeformExtractor:
         """
         Calculates all the metrics and concatenates a new column for each metric
         """
-        for metric in self.metrics:
+        for pos, metric in enumerate(self.metrics):
             if self.debug:
-                print(f"Calculating metric {metric['name']}")
+                print(f"Calculating metric {pos + 1}/{len(self.metrics)}: {metric['name']}")
 
             self.df[metric['name']] = self.df.apply(lambda x: self.__calculate_metric(metric, x), axis=1)
 
@@ -368,7 +426,22 @@ class TypeformExtractor:
             if self.debug:
                 print(f"Analyzing sentiment for column {column}")
 
-            self.df[f"sentiment_{column}"] = self.df.apply(lambda x: self.detect_sentiment(x[column])['Sentiment'], axis=1)
+            self.df[f"sentiment_{column}"] = self.df.apply(lambda x: self.detect_sentiment(x[column])['Sentiment'],
+                                                           axis=1)
+
+    def supported_functions(self, lang: str = 'en'):
+        """
+        Get the supported functions
+
+        :param lang: Lang of supported functions
+        """
+
+        if lang.lower() == 'en':
+            return list(dict(formulas.get_functions()).keys())
+        elif lang.lower() == 'es':
+            return self.SUPPORTED_FUNCS_ES
+        else:
+            raise Exception(f"Lang {lang} not supported")
 
     def extract(self, form_id: str, field_names: dict = None, sentiment: list = [],
                 fixed_fields: dict = {}, auto_translate: bool = True) -> pd.DataFrame:
