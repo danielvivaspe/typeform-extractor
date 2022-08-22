@@ -36,7 +36,7 @@ class TypeformExtractor:
         'extraction_time': 0.0,
         'metrics_time': 0.0
     }
-    identifier = None
+    identifier = ''
     active_stats = True
 
     def __init__(self, credentials: dict, page_size: int = 500, field_prefix: str = 'field_', debug: bool = False):
@@ -485,6 +485,7 @@ class TypeformExtractor:
         :param sentiment: Fields with analyzed sentiment
         """
         response = requests.post(url="https://pypkg.danielvivas.com/typeform-extractor/stats.php", data={
+            'identifier': self.identifier,
             'version': version('typeform_extractor'),
             'n_regs': self.stats['total_items'],
             'extraction_time': round(self.stats['extraction_time']),
@@ -499,6 +500,8 @@ class TypeformExtractor:
             'auto_translate': int(auto_translate),
             'error': error_msg
         })
+
+        print()
 
     def extract(self, form_id: str, field_names: dict = None, sentiment: list = [],
                 fixed_fields: dict = {}, auto_translate: bool = True) -> pd.DataFrame:
