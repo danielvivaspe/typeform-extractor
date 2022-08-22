@@ -4,6 +4,9 @@ import pandas as pd
 import boto3.exceptions
 import formulas
 import random
+import time
+from importlib_metadata import version
+import traceback
 
 
 class TypeformExtractor:
@@ -27,6 +30,14 @@ class TypeformExtractor:
     field_prefix = None
     page_size = None
     debug = None
+
+    stats = {
+        'total_items': 0,
+        'extraction_time': 0.0,
+        'metrics_time': 0.0
+    }
+    identifier = None
+    active_stats = True
 
     def __init__(self, credentials: dict, page_size: int = 500, field_prefix: str = 'field_', debug: bool = False):
         """
@@ -76,6 +87,20 @@ class TypeformExtractor:
             {data.json()['code']} - {data.json()['description']}
             """)
 
+    def set_identifier(self, identifier):
+        self.identifier = identifier
+
+        if self.debug:
+            print(f"Identifier is now {identifier}")
+
+    def deactivate_stats(self):
+        self.active_stats = False
+
+        if self.debug:
+            print("Stats sending is now deactivated.")
+            print(
+                "Please, consider activating stats sending as it helps to the development os the package you are using.")
+
     def retrieve_data(self, form_id: str) -> dict:
         """
         Fetches form data from Typeform Responses API
@@ -98,7 +123,12 @@ class TypeformExtractor:
         data = requests.get(url, headers=headers, params=params)
         self.__api_error_handling(data)
 
-        return data.json()
+        data = data.json()
+
+        if self.stats['total_items'] == 0:
+            self.stats['total_items'] = data['total_items']
+
+        return data
 
     # Function to support get_field_names function
     def __recursive_search(self, data, dicc):
@@ -421,7 +451,12 @@ class TypeformExtractor:
 
             self.df[metric['name']] = self.df.apply(lambda x: self.__calculate_metric(metric, x), axis=1)
 
-    def analyze_sentiment(self, columns):
+    def analyze_sentiment(self, columns: list):
+        """
+        Analyzes sentiment for all the columns provided
+
+        :param columns: Columns to analyze
+        """
         for column in columns:
             if self.debug:
                 print(f"Analyzing sentiment for column {column}")
@@ -443,6 +478,28 @@ class TypeformExtractor:
         else:
             raise Exception(f"Lang {lang} not supported")
 
+    def send_stats(self, sentiment, field_names, fixed_fields, auto_translate, error_msg):
+        """
+        Sends anonymous stats to help improve package development
+
+        :param sentiment: Fields with analyzed sentiment
+        """
+        response = requests.post(url="https://pypkg.danielvivas.com/typeform-extractor/stats.php", data={
+            'version': version('typeform_extractor'),
+            'n_regs': self.stats['total_items'],
+            'extraction_time': round(self.stats['extraction_time']),
+            'n_sentiment': len(sentiment),
+            'sentiment_time': round(self.stats['sentiment_time']),
+            'n_metrics': len(self.metrics),
+            'metrics_time': round(self.stats['metrics_time']),
+            'page_size': self.page_size,
+            'debug': int(self.debug),
+            'field_names': int(field_names is not None),
+            'fixed_fields': len(fixed_fields),
+            'auto_translate': int(auto_translate),
+            'error': error_msg
+        })
+
     def extract(self, form_id: str, field_names: dict = None, sentiment: list = [],
                 fixed_fields: dict = {}, auto_translate: bool = True) -> pd.DataFrame:
         """
@@ -456,45 +513,86 @@ class TypeformExtractor:
         :return: Structured dataframe with all translated fields
         """
 
-        # If sentiment analysis is activated, AWS credentials need to be set
-        if (len(sentiment) != 0 and ('aws_public_key' not in self.credentials.keys() or self.credentials[
-            'aws_public_key'] == '' or 'aws_private_key' not in self.credentials.keys() or self.credentials[
-                                         'aws_private_key'] == '')):
-            raise Exception('AWS credentials are malformed or missing')
+        if self.debug:
+            print("##################################################################################")
+            print("#                              TYPEFORM EXTRACTOR                                #")
+            print("#                                By Daniel Vivas                                 #")
+            print("#                        Still in beta. Use with caution.                        #")
+            print("#                        Contact: contact@danielvivas.com                        #")
+            print("##################################################################################\n")
 
-        # Reset variables from previous results
-        self.df = None
-        self.last_token = ''
+            print("STARTING EXTRACTION...")
 
-        form_id = str(form_id)
+        error_msg = ""
 
-        # ------------------- First request -------------------#
-        data = self.retrieve_data(form_id)
+        try:
+            # Time taken to extract
+            time_start = time.perf_counter()
 
-        # ---------------- Get distinct columns ---------------#
-        columns = self.get_fields(data, fixed_fields, sentiment)
+            # If sentiment analysis is activated, AWS credentials need to be set
+            if (len(sentiment) != 0 and ('aws_public_key' not in self.credentials.keys() or self.credentials[
+                'aws_public_key'] == '' or 'aws_private_key' not in self.credentials.keys() or self.credentials[
+                                             'aws_private_key'] == '')):
+                raise Exception('AWS credentials are malformed or missing')
 
-        self.df = pd.DataFrame(columns=columns)
+            # Reset variables from previous results
+            self.df = None
+            self.last_token = ''
 
-        while len(data['items']) > 0:
-            self.generate_row(data, fixed_fields, sentiment)
+            form_id = str(form_id)
+
+            # ------------------- First request -------------------#
             data = self.retrieve_data(form_id)
 
-        # Field names - First, translate manually inputted names
-        if field_names is not None:
-            self.translate_fields(field_names)
+            # ---------------- Get distinct columns ---------------#
+            columns = self.get_fields(data, fixed_fields, sentiment)
 
-        # Field names - Then, auto translate fields
-        if auto_translate:
-            names = self.get_field_names(form_id)
-            self.translate_fields(names)
+            self.df = pd.DataFrame(columns=columns)
 
-        # Analyze sentiment
-        if sentiment is not None:
-            self.analyze_sentiment(sentiment)
+            while len(data['items']) > 0:
+                self.generate_row(data, fixed_fields, sentiment)
+                data = self.retrieve_data(form_id)
 
-        # Calculate metric
-        self.calculate_metrics()
+            # Field names - First, translate manually inputted names
+            if field_names is not None:
+                self.translate_fields(field_names)
+
+            # Field names - Then, auto translate fields
+            if auto_translate:
+                names = self.get_field_names(form_id)
+                self.translate_fields(names)
+
+            # Time taken to extract
+            time_end = time.perf_counter()
+            self.stats['extraction_time'] = time_end - time_start
+
+            # Analyze sentiment
+            if sentiment is not None:
+                time_start = time.perf_counter()
+
+                self.analyze_sentiment(sentiment)
+
+                self.stats['sentiment_time'] = time.perf_counter() - time_start
+
+            # Time taken to analyze sentiment
+            time_start = time.perf_counter()
+
+            # Calculate metric
+            self.calculate_metrics()
+
+            # Time taken to calculate metrics
+            self.stats['metrics_time'] = time.perf_counter() - time_start
+
+            if self.active_stats:
+                self.send_stats(sentiment, field_names, fixed_fields, auto_translate, error_msg)
+
+        except Exception as err:
+            error_msg = traceback.format_exc()
+
+            if self.active_stats:
+                self.send_stats(sentiment, field_names, fixed_fields, auto_translate, error_msg)
+
+            raise err
 
     def dataframe(self):
         return self.df
