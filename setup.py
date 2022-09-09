@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='typeform_extractor',
-    version='0.9.9.2',
+    version='0.9.9.3',
     license='MIT',
     author="Daniel Vivas",
     author_email='hello@danielvivas.com',
